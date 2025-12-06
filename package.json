@@ -50,10 +50,18 @@
     {
       "name": "modelName",
       "title": "Model Name",
-      "description": "Model ID (e.g. anthropic/claude-3.5-haiku)",
+      "description": "Primary model ID (e.g. anthropic/claude-3.5-haiku)",
       "type": "textfield",
       "required": true,
       "default": "anthropic/claude-3.5-haiku"
+    },
+    {
+      "name": "retryModelName",
+      "title": "Retry Model",
+      "description": "Fallback model if primary refuses (e.g. deepseek/deepseek-chat)",
+      "type": "textfield",
+      "required": false,
+      "default": "deepseek/deepseek-chat"
     },
     {
       "name": "daytonaApiKey",

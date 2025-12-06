@@ -16,6 +16,7 @@ import path from "path";
 interface Preferences {
   workingDirectory: string;
   modelName: string;
+  retryModelName: string;
   openRouterApiKey: string;
   daytonaApiKey: string;
 }
@@ -52,7 +53,7 @@ export default function Command() {
 
   async function handleSubmit(values: FormValues) {
     const { prompt, files } = values;
-    const { workingDirectory, modelName, openRouterApiKey, daytonaApiKey } = preferences;
+    const { workingDirectory, modelName, retryModelName, openRouterApiKey, daytonaApiKey } = preferences;
 
     if (!prompt) {
       await showToast({
@@ -148,9 +149,35 @@ const taskId = "${taskId}";
 const tasksFile = "${tasksFile}";
 const logFile = "${logFile}";
 const apiKey = "${daytonaApiKey}";
-const model = "openrouter/${modelName || "anthropic/claude-3.5-haiku"}";
+const primaryModel = "openrouter/${modelName || "anthropic/claude-3.5-haiku"}";
+const retryModel = "${retryModelName ? `openrouter/${retryModelName}` : ""}";
 const fileContents = ${JSON.stringify(fileContents)};
 const envVars = ${JSON.stringify({ OPENROUTER_API_KEY: openRouterApiKey })};
+
+// Patterns that indicate model refusal
+const REFUSAL_PATTERNS = [
+    "I can't help",
+    "I cannot help",
+    "I'm unable to",
+    "I am unable to",
+    "I can't assist",
+    "I cannot assist",
+    "violate",
+    "Terms of Service",
+    "against my guidelines",
+    "I'm not able to",
+    "I am not able to",
+    "I won't be able",
+    "I will not be able",
+    "not something I can help with",
+    "I'm sorry, but I can't",
+    "I apologize, but I cannot"
+];
+
+function detectRefusal(output) {
+    const lowerOutput = output.toLowerCase();
+    return REFUSAL_PATTERNS.some(pattern => lowerOutput.includes(pattern.toLowerCase()));
+}
 
 const promptText = \`IMPORTANT INSTRUCTIONS:
 1. You are running in a Daytona sandbox environment.
@@ -234,16 +261,32 @@ async function main() {
             if (value) envSetup += \`export \${key}='\${escapeForShell(value)}' && \`;
         }
 
-        log("Running opencode...");
         const escapedPrompt = escapeForShell(fullPrompt);
-        const command = \`\${envSetup}opencode run --model '\${escapeForShell(model)}' '\${escapedPrompt}' --print-logs 2>&1\`;
         
-        const result = await sandbox.process.executeCommand(command);
-        const exitCode = result?.exitCode ?? result?.exit_code ?? 0;
-        const output = result?.stdout || result?.result || "";
+        // Run with primary model
+        log(\`Running opencode with primary model: \${primaryModel}\`);
+        let command = \`\${envSetup}opencode run --model '\${escapeForShell(primaryModel)}' '\${escapedPrompt}' --print-logs 2>&1\`;
         
-        log(\`OpenCode finished with exit code: \${exitCode}\`);
+        let result = await sandbox.process.executeCommand(command);
+        let exitCode = result?.exitCode ?? result?.exit_code ?? 0;
+        let output = result?.stdout || result?.result || "";
+        
+        log(\`Primary model finished with exit code: \${exitCode}\`);
         log("Output:\\n" + output);
+        
+        // Check if model refused and retry model is configured
+        if (retryModel && detectRefusal(output)) {
+            log("\\n=== REFUSAL DETECTED - Retrying with fallback model ===\\n");
+            log(\`Retrying with: \${retryModel}\`);
+            
+            command = \`\${envSetup}opencode run --model '\${escapeForShell(retryModel)}' '\${escapedPrompt}' --print-logs 2>&1\`;
+            result = await sandbox.process.executeCommand(command);
+            exitCode = result?.exitCode ?? result?.exit_code ?? 0;
+            output = result?.stdout || result?.result || "";
+            
+            log(\`Retry model finished with exit code: \${exitCode}\`);
+            log("Retry Output:\\n" + output);
+        }
 
         log("Cleaning up sandbox...");
         await sandbox.delete();
