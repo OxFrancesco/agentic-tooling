@@ -279,7 +279,14 @@ async function main() {
             log("\\n=== REFUSAL DETECTED - Retrying with fallback model ===\\n");
             log(\`Retrying with: \${retryModel}\`);
             
-            command = \`\${envSetup}opencode run --model '\${escapeForShell(retryModel)}' '\${escapedPrompt}' --print-logs 2>&1\`;
+            // Clean up opencode state before retry
+            log("Cleaning up opencode state...");
+            await sandbox.process.executeCommand("pkill -f opencode || true; rm -rf /home/daytona/.config/opencode/state* /home/daytona/.cache/opencode 2>/dev/null || true");
+            
+            // Small delay to ensure cleanup
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            command = \`\${envSetup}timeout 120 opencode run --model '\${escapeForShell(retryModel)}' '\${escapedPrompt}' --print-logs 2>&1\`;
             result = await sandbox.process.executeCommand(command);
             exitCode = result?.exitCode ?? result?.exit_code ?? 0;
             output = result?.stdout || result?.result || "";
