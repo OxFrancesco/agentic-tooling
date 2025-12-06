@@ -183,6 +183,13 @@ function escapeForShell(value) {
 
 function runDocker(model, prompt) {
     const escapedPrompt = escapeForShell(prompt);
+    // Create opencode config to auto-approve all permissions
+    const setupCmd = \`
+        mkdir -p /root/.config/opencode && 
+        echo '{"permission":{"edit":"allow","bash":"allow","mcp":"allow","webfetch":"allow"}}' > /root/.config/opencode/opencode.json &&
+        npm install -g opencode-ai 2>&1 &&
+        opencode run --model '\${escapeForShell(model)}' '\${escapedPrompt}' --print-logs 2>&1
+    \`;
     const dockerArgs = [
         "run", "--rm",
         "-e", \`OPENROUTER_API_KEY=\${openRouterApiKey}\`,
@@ -190,7 +197,7 @@ function runDocker(model, prompt) {
         "-w", "/workspace",
         "node:20",
         "bash", "-c",
-        \`npm install -g opencode-ai 2>&1 && opencode run --model '\${escapeForShell(model)}' '\${escapedPrompt}' --print-logs 2>&1\`
+        setupCmd
     ];
     
     log(\`Running: docker \${dockerArgs.slice(0, 5).join(" ")} ...\`);
