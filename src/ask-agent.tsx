@@ -86,9 +86,14 @@ export default function Command() {
       const taskId = Date.now().toString();
       const logFile = `${workingDirectory}/.agentic-logs/${taskId}.log`;
       const tasksFile = `${workingDirectory}/.agentic-tasks.json`;
+      const toolsDirectory = `${workingDirectory}/tools`;
 
       if (!fs.existsSync(path.dirname(logFile))) {
         fs.mkdirSync(path.dirname(logFile), { recursive: true });
+      }
+
+      if (!fs.existsSync(toolsDirectory)) {
+        fs.mkdirSync(toolsDirectory, { recursive: true });
       }
 
       // Initialize task
@@ -132,10 +137,12 @@ export default function Command() {
 import { execSync, spawnSync } from "child_process";
 import fs from "fs";
 
+const DOCKER_IMAGE = "agentic-tooling:latest";
 const taskId = "${taskId}";
 const tasksFile = "${tasksFile}";
 const logFile = "${logFile}";
 const workingDirectory = "${workingDirectory}";
+const toolsDirectory = "${toolsDirectory}";
 const primaryModel = "openrouter/${modelName || "anthropic/claude-3.5-haiku"}";
 const retryModel = "${retryModelName ? `openrouter/${retryModelName}` : ""}";
 const openRouterApiKey = "${openRouterApiKey}";
@@ -143,6 +150,12 @@ const openRouterApiKey = "${openRouterApiKey}";
 const promptText = \`You are running in a Docker container with FULL NETWORK ACCESS.
 Execute tasks directly - you can download files, make API calls, etc.
 Save any output files to /workspace directory.
+
+IMPORTANT - TOOL REUSE:
+Before creating any scripts or tools, check /tools directory for existing tools that might solve the task:
+1. Run: ls -la /tools/ to see available tools
+2. If a suitable tool exists, use it instead of creating a new one
+3. If you must create a new tool, save it to /workspace with a descriptive filename
 
 USER REQUEST:
 ${prompt.replace(/`/g, "\\`").replace(/\$/g, "\\$")}
@@ -175,26 +188,15 @@ function escapeForShell(value) {
 
 function runDocker(model, prompt) {
     const escapedPrompt = escapeForShell(prompt);
-    // Create opencode config to auto-approve all permissions
-    const setupCmd = \`
-        apt-get update && apt-get install -y curl unzip &&
-        curl -fsSL https://bun.sh/install | bash &&
-        curl -LsSf https://astral.sh/uv/install.sh | sh &&
-        export PATH="/root/.bun/bin:/root/.local/bin:/root/.cargo/bin:$PATH" &&
-        mkdir -p /root/.config/opencode && 
-        echo '{"permission":{"edit":"allow","bash":"allow","mcp":"allow","webfetch":"allow"}}' > /root/.config/opencode/opencode.json &&
-        npm install -g opencode-ai 2>&1 &&
-        opencode run --model '\${escapeForShell(model)}' '\${escapedPrompt}' --print-logs 2>&1
-    \`;
 
     const dockerArgs = [
         "run", "--rm",
         "-e", \`OPENROUTER_API_KEY=\${openRouterApiKey}\`,
         "-v", \`\${workingDirectory}:/workspace\`,
+        "-v", \`\${toolsDirectory}:/tools:ro\`,
         "-w", "/workspace",
-        "node:20",
-        "bash", "-c",
-        setupCmd
+        DOCKER_IMAGE,
+        "opencode", "run", "--model", model, escapedPrompt, "--print-logs"
     ];
     
     log(\`Running: docker \${dockerArgs.slice(0, 5).join(" ")} ...\`);
@@ -239,6 +241,32 @@ function detectRefusal(output) {
     return REFUSAL_PATTERNS.some(pattern => lowerOutput.includes(pattern.toLowerCase()));
 }
 
+function collectTools() {
+    const toolExtensions = [".sh", ".ts", ".js", ".py"];
+    const excludePatterns = [".runner-", "node_modules", ".git", ".agentic"];
+    
+    try {
+        const files = fs.readdirSync(workingDirectory);
+        for (const file of files) {
+            if (excludePatterns.some(p => file.includes(p))) continue;
+            if (toolExtensions.some(ext => file.endsWith(ext))) {
+                const srcPath = workingDirectory + "/" + file;
+                const destPath = toolsDirectory + "/" + file;
+                try {
+                    const stat = fs.statSync(srcPath);
+                    if (!stat.isFile()) continue;
+                    if (fs.existsSync(destPath)) continue;
+                    fs.copyFileSync(srcPath, destPath);
+                    fs.chmodSync(destPath, 0o755);
+                    log("Saved new tool: " + file);
+                } catch(e) {}
+            }
+        }
+    } catch(e) {
+        log("Warning: Failed to collect tools: " + e);
+    }
+}
+
 try {
     log("Starting Docker sandbox...");
     
@@ -276,6 +304,11 @@ try {
         
         log(\`Retry model finished with exit code: \${result.exitCode}\`);
         log("Retry Output:\\n" + result.output);
+    }
+    
+    // Collect tools on successful run
+    if (result.exitCode === 0) {
+        collectTools();
     }
     
     updateTask(result.exitCode === 0 ? "completed" : "failed", Date.now());

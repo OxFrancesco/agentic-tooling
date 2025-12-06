@@ -77,12 +77,44 @@ if (!fs.existsSync(workingDirectory)) {
   process.exit(1);
 }
 
+// Ensure tools directory exists
+const toolsDirectory = path.join(workingDirectory, "tools");
+if (!fs.existsSync(toolsDirectory)) {
+  fs.mkdirSync(toolsDirectory, { recursive: true });
+}
+
+const DOCKER_IMAGE = "agentic-tooling:latest";
+
 // Check Docker is available
 try {
   execSync("docker --version", { encoding: "utf-8", stdio: "pipe" });
 } catch {
   console.error("Error: Docker is not installed or not running");
   process.exit(1);
+}
+
+// Check if our Docker image exists, build if not
+function ensureDockerImage(): void {
+  try {
+    execSync(`docker image inspect ${DOCKER_IMAGE}`, { encoding: "utf-8", stdio: "pipe" });
+  } catch {
+    console.log(`Docker image '${DOCKER_IMAGE}' not found. Building...`);
+    const dockerfilePath = path.join(process.cwd(), "docker", "Dockerfile");
+    if (!fs.existsSync(dockerfilePath)) {
+      console.error("Error: docker/Dockerfile not found. Run from project root.");
+      process.exit(1);
+    }
+    try {
+      execSync(`docker build -t ${DOCKER_IMAGE} -f docker/Dockerfile .`, {
+        encoding: "utf-8",
+        stdio: "inherit",
+      });
+      console.log("Docker image built successfully.\n");
+    } catch {
+      console.error("Error: Failed to build Docker image");
+      process.exit(1);
+    }
+  }
 }
 
 function log(msg: string) {
@@ -123,18 +155,38 @@ function detectRefusal(output: string): boolean {
   return REFUSAL_PATTERNS.some((pattern) => lowerOutput.includes(pattern.toLowerCase()));
 }
 
+function collectTools(): void {
+  const toolExtensions = [".sh", ".ts", ".js", ".py"];
+  const excludePatterns = [".runner-", "node_modules", ".git", ".agentic"];
+
+  try {
+    const files = fs.readdirSync(workingDirectory);
+    for (const file of files) {
+      // Skip if matches exclude pattern
+      if (excludePatterns.some((p) => file.includes(p))) continue;
+
+      // Check if it's a tool file
+      if (toolExtensions.some((ext) => file.endsWith(ext))) {
+        const srcPath = path.join(workingDirectory, file);
+        const destPath = path.join(toolsDirectory, file);
+
+        // Skip if not a file or already exists in tools
+        if (!fs.statSync(srcPath).isFile()) continue;
+        if (fs.existsSync(destPath)) continue;
+
+        // Copy to tools directory
+        fs.copyFileSync(srcPath, destPath);
+        fs.chmodSync(destPath, 0o755);
+        log(`Saved new tool: ${file}`);
+      }
+    }
+  } catch (e) {
+    log(`Warning: Failed to collect tools: ${e}`);
+  }
+}
+
 async function runDocker(model: string, promptText: string): Promise<{ exitCode: number; output: string }> {
   const escapedPrompt = escapeForShell(promptText);
-  const setupCmd = `
-    apt-get update && apt-get install -y curl unzip &&
-    curl -fsSL https://bun.sh/install | bash &&
-    curl -LsSf https://astral.sh/uv/install.sh | sh &&
-    export PATH="/root/.bun/bin:/root/.local/bin:/root/.cargo/bin:$PATH" &&
-    mkdir -p /root/.config/opencode && 
-    echo '{"permission":{"edit":"allow","bash":"allow","mcp":"allow","webfetch":"allow"}}' > /root/.config/opencode/opencode.json &&
-    npm install -g opencode-ai 2>&1 &&
-    opencode run --model '${escapeForShell(model)}' '${escapedPrompt}' --print-logs 2>&1
-  `;
 
   const dockerArgs = [
     "run",
@@ -143,12 +195,17 @@ async function runDocker(model: string, promptText: string): Promise<{ exitCode:
     `OPENROUTER_API_KEY=${openRouterApiKey}`,
     "-v",
     `${workingDirectory}:/workspace`,
+    "-v",
+    `${toolsDirectory}:/tools:ro`,
     "-w",
     "/workspace",
-    "node:20",
-    "bash",
-    "-c",
-    setupCmd,
+    DOCKER_IMAGE,
+    "opencode",
+    "run",
+    "--model",
+    model,
+    escapedPrompt,
+    "--print-logs",
   ];
 
   log(`Running Docker with model: ${model}`);
@@ -200,6 +257,12 @@ let promptText = `You are running in a Docker container with FULL NETWORK ACCESS
 Execute tasks directly - you can download files, make API calls, etc.
 Save any output files to /workspace directory.
 
+IMPORTANT - TOOL REUSE:
+Before creating any scripts or tools, check /tools directory for existing tools that might solve the task:
+1. Run: ls -la /tools/ to see available tools
+2. If a suitable tool exists, use it instead of creating a new one
+3. If you must create a new tool, save it to /workspace with a descriptive filename
+
 USER REQUEST:
 ${prompt}
 `;
@@ -221,6 +284,7 @@ if (contextFiles.length > 0) {
 }
 
 async function main() {
+  ensureDockerImage();
   log("Starting Docker sandbox...");
   log(`Working directory: ${workingDirectory}`);
   log(`Primary model: openrouter/${modelName}`);
@@ -240,6 +304,11 @@ async function main() {
     result = await runDocker(`openrouter/${retryModelName}`, promptText);
 
     log(`\nRetry model finished with exit code: ${result.exitCode}`);
+  }
+
+  // Collect tools on successful run
+  if (result.exitCode === 0) {
+    collectTools();
   }
 
   process.exit(result.exitCode);
