@@ -263,6 +263,16 @@ try {
     // Check if model refused and retry model is configured
     if (retryModel && detectRefusal(result.output)) {
         log("\\n=== REFUSAL DETECTED - Retrying with fallback model ===\\n");
+        
+        // Clean up opencode state from workspace before retry
+        log("Cleaning up workspace state...");
+        try {
+            execSync(\`rm -rf "\${workDir}/.opencode" "\${workDir}/.config/opencode" 2>/dev/null || true\`, { encoding: "utf-8" });
+            log("Workspace cleanup done");
+        } catch (e) {
+            log("Cleanup warning: " + e.message);
+        }
+        
         log(\`Retrying with: \${retryModel}\`);
         
         result = runDocker(retryModel, promptText);
