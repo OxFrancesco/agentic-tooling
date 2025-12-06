@@ -228,7 +228,13 @@ const REFUSAL_PATTERNS = [
     "I will not be able",
     "not something I can help with",
     "I'm sorry, but I can't",
-    "I apologize, but I cannot"
+    "I apologize, but I cannot",
+    "need to decline",
+    "I should not help",
+    "I shouldn't help",
+    "I must decline",
+    "cannot fulfill this request",
+    "can't fulfill this request"
 ];
 
 function detectRefusal(output) {
@@ -315,7 +321,13 @@ const REFUSAL_PATTERNS = [
     "I will not be able",
     "not something I can help with",
     "I'm sorry, but I can't",
-    "I apologize, but I cannot"
+    "I apologize, but I cannot",
+    "need to decline",
+    "I should not help",
+    "I shouldn't help",
+    "I must decline",
+    "cannot fulfill this request",
+    "can't fulfill this request"
 ];
 
 function detectRefusal(output) {
