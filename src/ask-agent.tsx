@@ -261,7 +261,7 @@ async function main() {
             fullPrompt += fileContents.map(f => \`- \${f.name}\`).join("\\n");
         }
 
-        let envSetup = "";
+        let envSetup = "export PATH=\\$HOME/.bun/bin:\\$PATH && ";
         for (const [key, value] of Object.entries(envVars)) {
             if (value) envSetup += \`export \${key}='\${escapeForShell(value)}' && \`;
         }
