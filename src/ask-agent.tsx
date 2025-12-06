@@ -147,6 +147,7 @@ const workingDirectory = "${workingDirectory}";
 const primaryModel = "openrouter/${modelName || "anthropic/claude-3.5-haiku"}";
 const retryModel = "${retryModelName ? `openrouter/${retryModelName}` : ""}";
 const openRouterApiKey = "${openRouterApiKey}";
+const envVars = ${JSON.stringify(envVars)};
 
 const promptText = \`You are running in a Docker container with FULL NETWORK ACCESS.
 Execute tasks directly - you can download files, make API calls, etc.
@@ -185,13 +186,27 @@ function runDocker(model, prompt) {
     const escapedPrompt = escapeForShell(prompt);
     // Create opencode config to auto-approve all permissions
     const setupCmd = \`
+        apt-get update && apt-get install -y curl unzip &&
+        curl -fsSL https://bun.sh/install | bash &&
+        curl -LsSf https://astral.sh/uv/install.sh | sh &&
+        export PATH="/root/.bun/bin:/root/.local/bin:/root/.cargo/bin:$PATH" &&
         mkdir -p /root/.config/opencode && 
         echo '{"permission":{"edit":"allow","bash":"allow","mcp":"allow","webfetch":"allow"}}' > /root/.config/opencode/opencode.json &&
         npm install -g opencode-ai 2>&1 &&
         opencode run --model '\${escapeForShell(model)}' '\${escapedPrompt}' --print-logs 2>&1
     \`;
+
+    const envArgs = [];
+    for (const [key, value] of Object.entries(envVars)) {
+        if (key !== "PATH" && key !== "HOME") {
+            envArgs.push("-e");
+            envArgs.push(\`\${key}=\${value}\`);
+        }
+    }
+
     const dockerArgs = [
         "run", "--rm",
+        ...envArgs,
         "-e", \`OPENROUTER_API_KEY=\${openRouterApiKey}\`,
         "-v", \`\${workingDirectory}:/workspace\`,
         "-w", "/workspace",
