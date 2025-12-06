@@ -242,8 +242,8 @@ async function main() {
         const sandbox = await daytona.create({ language: "typescript" });
         log(\`Sandbox created: \${sandbox.id || "unknown"}\`);
 
-        log("Installing opencode via bun...");
-        await sandbox.process.executeCommand("bun add -g opencode-ai 2>&1");
+        log("Installing opencode...");
+        await sandbox.process.executeCommand("npm install -g opencode-ai 2>&1");
         log("OpenCode installed");
 
         if (fileContents.length > 0) {
@@ -261,7 +261,7 @@ async function main() {
             fullPrompt += fileContents.map(f => \`- \${f.name}\`).join("\\n");
         }
 
-        let envSetup = "export PATH=\\$HOME/.bun/bin:\\$PATH && ";
+        let envSetup = "";
         for (const [key, value] of Object.entries(envVars)) {
             if (value) envSetup += \`export \${key}='\${escapeForShell(value)}' && \`;
         }
