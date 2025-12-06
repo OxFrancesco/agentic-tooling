@@ -61,23 +61,7 @@
       "description": "Fallback model if primary refuses (e.g. deepseek/deepseek-chat)",
       "type": "textfield",
       "required": false,
-      "default": "deepseek/deepseek-chat"
-    },
-    {
-      "name": "useLocalDocker",
-      "title": "Use Local Docker",
-      "description": "Run in local Docker container instead of Daytona (full network access)",
-      "type": "checkbox",
-      "required": false,
-      "default": false,
-      "label": "Use Docker (requires Docker installed)"
-    },
-    {
-      "name": "daytonaApiKey",
-      "title": "Daytona API Key",
-      "description": "Your Daytona API Key. Get it from https://app.daytona.io (not needed if using Docker)",
-      "type": "password",
-      "required": false
+      "default": "deepseek/deepseek-chat-v3-0324"
     },
     {
       "name": "openRouterApiKey",
@@ -88,7 +72,6 @@
     }
   ],
   "dependencies": {
-    "@daytonaio/sdk": "latest",
     "@raycast/api": "^1.103.10",
     "@raycast/utils": "^1.17.0"
   },
@@ -105,7 +88,7 @@
     "dev": "ray develop",
     "fix-lint": "ray lint --fix",
     "lint": "ray lint",
-    "daytona-cli": "bun run scripts/daytona-cli.ts --",
+    "cli": "bun run scripts/cli.ts --",
     "prepublishOnly": "echo \"\\n\\nIt seems like you are trying to publish the Raycast extension to npm.\\n\\nIf you did intend to publish it to npm, remove the \\`prepublishOnly\\` script and rerun \\`npm publish\\` again.\\nIf you wanted to publish it to the Raycast Store instead, use \\`npm run publish\\` instead.\\n\\n\" && exit 1",
     "publish": "npx @raycast/api@latest publish"
   }

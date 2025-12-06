@@ -18,8 +18,6 @@ interface Preferences {
   modelName: string;
   retryModelName: string;
   openRouterApiKey: string;
-  daytonaApiKey: string;
-  useLocalDocker: boolean;
 }
 
 interface FormValues {
@@ -30,12 +28,7 @@ interface FormValues {
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
 
-  // Onboarding Check - Docker mode doesn't need Daytona API key
-  const isConfigured =
-    preferences.workingDirectory &&
-    preferences.modelName &&
-    preferences.openRouterApiKey &&
-    (preferences.useLocalDocker || preferences.daytonaApiKey);
+  const isConfigured = preferences.workingDirectory && preferences.modelName && preferences.openRouterApiKey;
 
   if (!isConfigured) {
     return (
@@ -57,8 +50,7 @@ export default function Command() {
 
   async function handleSubmit(values: FormValues) {
     const { prompt, files } = values;
-    const { workingDirectory, modelName, retryModelName, openRouterApiKey, daytonaApiKey, useLocalDocker } =
-      preferences;
+    const { workingDirectory, modelName, retryModelName, openRouterApiKey } = preferences;
 
     if (!prompt) {
       await showToast({
@@ -147,7 +139,6 @@ const workingDirectory = "${workingDirectory}";
 const primaryModel = "openrouter/${modelName || "anthropic/claude-3.5-haiku"}";
 const retryModel = "${retryModelName ? `openrouter/${retryModelName}` : ""}";
 const openRouterApiKey = "${openRouterApiKey}";
-const envVars = ${JSON.stringify(envVars)};
 
 const promptText = \`You are running in a Docker container with FULL NETWORK ACCESS.
 Execute tasks directly - you can download files, make API calls, etc.
@@ -196,17 +187,8 @@ function runDocker(model, prompt) {
         opencode run --model '\${escapeForShell(model)}' '\${escapedPrompt}' --print-logs 2>&1
     \`;
 
-    const envArgs = [];
-    for (const [key, value] of Object.entries(envVars)) {
-        if (key !== "PATH" && key !== "HOME") {
-            envArgs.push("-e");
-            envArgs.push(\`\${key}=\${value}\`);
-        }
-    }
-
     const dockerArgs = [
         "run", "--rm",
-        ...envArgs,
         "-e", \`OPENROUTER_API_KEY=\${openRouterApiKey}\`,
         "-v", \`\${workingDirectory}:/workspace\`,
         "-w", "/workspace",
@@ -282,7 +264,7 @@ try {
         // Clean up opencode state from workspace before retry
         log("Cleaning up workspace state...");
         try {
-            execSync(\`rm -rf "\${workDir}/.opencode" "\${workDir}/.config/opencode" 2>/dev/null || true\`, { encoding: "utf-8" });
+            execSync(\`rm -rf "\${workingDirectory}/.opencode" "\${workingDirectory}/.config/opencode" 2>/dev/null || true\`, { encoding: "utf-8" });
             log("Workspace cleanup done");
         } catch (e) {
             log("Cleanup warning: " + e.message);
@@ -305,201 +287,7 @@ try {
 }
 `;
 
-      // Daytona-based runner script (network restricted)
-      const daytonaRunnerScript = `
-import { execSync } from "child_process";
-import fs from "fs";
-
-// Install @daytonaio/sdk locally if not present
-const pkgPath = "./node_modules/@daytonaio/sdk";
-if (!fs.existsSync(pkgPath)) {
-    console.log("Installing @daytonaio/sdk...");
-    execSync("bun add @daytonaio/sdk", { stdio: "inherit" });
-}
-
-const { Daytona } = await import("@daytonaio/sdk");
-
-const CHUNK_SIZE = 60000;
-const CONTEXT_DIR = "/home/daytona/context";
-
-const taskId = "${taskId}";
-const tasksFile = "${tasksFile}";
-const logFile = "${logFile}";
-const apiKey = "${daytonaApiKey}";
-const primaryModel = "openrouter/${modelName || "anthropic/claude-3.5-haiku"}";
-const retryModel = "${retryModelName ? `openrouter/${retryModelName}` : ""}";
-const fileContents = ${JSON.stringify(fileContents)};
-const envVars = ${JSON.stringify({ OPENROUTER_API_KEY: openRouterApiKey })};
-
-// Patterns that indicate model refusal
-const REFUSAL_PATTERNS = [
-    "I can't help",
-    "I cannot help",
-    "I'm unable to",
-    "I am unable to",
-    "I can't assist",
-    "I cannot assist",
-    "against my guidelines",
-    "I'm not able to",
-    "I am not able to",
-    "I won't be able",
-    "I will not be able",
-    "not something I can help with",
-    "I'm sorry, but I can't",
-    "I apologize, but I cannot",
-    "need to decline",
-    "I should not help",
-    "I shouldn't help",
-    "I must decline",
-    "cannot fulfill this request",
-    "can't fulfill this request"
-];
-
-function detectRefusal(output) {
-    const lowerOutput = output.toLowerCase();
-    return REFUSAL_PATTERNS.some(pattern => lowerOutput.includes(pattern.toLowerCase()));
-}
-
-const promptText = \`IMPORTANT INSTRUCTIONS:
-1. You are running in a Daytona sandbox with LIMITED NETWORK ACCESS.
-2. For tasks requiring external network (downloads, API calls, web scraping, etc.):
-   - Create a SINGLE-FILE executable script using bun or uv shebang
-   - Save it to /home/daytona/output/ directory
-   - Do NOT try to execute network-dependent commands in the sandbox
-   - The user will run the script locally
-3. For coding/file tasks: execute normally in the sandbox.
-
-USER REQUEST:
-${prompt.replace(/`/g, "\\`").replace(/\$/g, "\\$")}
-\`;
-
-function log(msg) {
-    const line = \`[\${new Date().toISOString()}] \${msg}\\n\`;
-    fs.appendFileSync(logFile, line);
-    console.log(msg);
-}
-
-function updateTask(status, endTime) {
-    try {
-        let tasks = [];
-        if (fs.existsSync(tasksFile)) {
-            tasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
-        }
-        const idx = tasks.findIndex(t => t.id === taskId);
-        if (idx !== -1) {
-            tasks[idx].status = status;
-            if (endTime) tasks[idx].endTime = endTime;
-            fs.writeFileSync(tasksFile, JSON.stringify(tasks, null, 2));
-        }
-    } catch(e) { log("Failed to update task: " + e); }
-}
-
-function escapeSingleQuotes(value) {
-    return value.replace(/'/g, "'" + '"' + "'" + '"' + "'");
-}
-
-function escapeForShell(value) {
-    return value.replace(/'/g, "'\\\\''");
-}
-
-async function uploadFile(sandbox, remotePath, b64Content) {
-    const escaped = escapeSingleQuotes(remotePath);
-    const dir = remotePath.substring(0, remotePath.lastIndexOf('/'));
-    await sandbox.process.executeCommand(\`mkdir -p '\${escapeSingleQuotes(dir)}' && : > '\${escaped}'\`);
-    
-    for (let i = 0; i < b64Content.length; i += CHUNK_SIZE) {
-        const chunk = escapeSingleQuotes(b64Content.slice(i, i + CHUNK_SIZE));
-        const res = await sandbox.process.executeCommand(\`echo '\${chunk}' | base64 -d >> '\${escaped}'\`);
-        if ((res?.exitCode ?? res?.exit_code ?? 0) !== 0) {
-            throw new Error(\`Failed to upload: \${res?.stderr || res?.result}\`);
-        }
-    }
-}
-
-async function main() {
-    try {
-        log("Creating Daytona sandbox...");
-        const daytona = new Daytona({ apiKey });
-        const sandbox = await daytona.create({ language: "typescript" });
-        log(\`Sandbox created: \${sandbox.id || "unknown"}\`);
-
-        log("Installing opencode...");
-        await sandbox.process.executeCommand("npm install -g opencode-ai 2>&1");
-        log("OpenCode installed");
-
-        if (fileContents.length > 0) {
-            log(\`Uploading \${fileContents.length} context file(s)...\`);
-            for (const file of fileContents) {
-                const remotePath = \`\${CONTEXT_DIR}/\${file.name}\`;
-                await uploadFile(sandbox, remotePath, file.b64);
-                log(\`Uploaded: \${file.name}\`);
-            }
-        }
-
-        let fullPrompt = promptText;
-        if (fileContents.length > 0) {
-            fullPrompt += \`\\n\\nContext files uploaded to \${CONTEXT_DIR}/:\\n\`;
-            fullPrompt += fileContents.map(f => \`- \${f.name}\`).join("\\n");
-        }
-
-        let envSetup = "";
-        for (const [key, value] of Object.entries(envVars)) {
-            if (value) envSetup += \`export \${key}='\${escapeForShell(value)}' && \`;
-        }
-
-        const escapedPrompt = escapeForShell(fullPrompt);
-        
-        // Run with primary model
-        log(\`Running opencode with primary model: \${primaryModel}\`);
-        let command = \`\${envSetup}opencode run --model '\${escapeForShell(primaryModel)}' '\${escapedPrompt}' --print-logs 2>&1\`;
-        
-        let result = await sandbox.process.executeCommand(command);
-        let exitCode = result?.exitCode ?? result?.exit_code ?? 0;
-        let output = result?.stdout || result?.result || "";
-        
-        log(\`Primary model finished with exit code: \${exitCode}\`);
-        log("Output:\\n" + output);
-        
-        // Check if model refused and retry model is configured
-        if (retryModel && detectRefusal(output)) {
-            log("\\n=== REFUSAL DETECTED - Retrying with fallback model ===\\n");
-            log(\`Retrying with: \${retryModel}\`);
-            
-            // Clean up opencode state before retry
-            log("Cleaning up opencode state...");
-            await sandbox.process.executeCommand("pkill -f opencode || true; rm -rf /home/daytona/.config/opencode/state* /home/daytona/.cache/opencode 2>/dev/null || true");
-            
-            // Small delay to ensure cleanup
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            command = \`\${envSetup}timeout 120 opencode run --model '\${escapeForShell(retryModel)}' '\${escapedPrompt}' --print-logs 2>&1\`;
-            result = await sandbox.process.executeCommand(command);
-            exitCode = result?.exitCode ?? result?.exit_code ?? 0;
-            output = result?.stdout || result?.result || "";
-            
-            log(\`Retry model finished with exit code: \${exitCode}\`);
-            log("Retry Output:\\n" + output);
-        }
-
-        log("Cleaning up sandbox...");
-        await sandbox.delete();
-        log("Sandbox deleted");
-
-        updateTask(exitCode === 0 ? "completed" : "failed", Date.now());
-        process.exit(exitCode);
-    } catch (err) {
-        log("Error: " + (err?.message || err));
-        updateTask("failed", Date.now());
-        process.exit(1);
-    }
-}
-
-main();
-`;
-
-      // Choose runner based on preference
-      const runnerScript = useLocalDocker ? dockerRunnerScript : daytonaRunnerScript;
-      fs.writeFileSync(scriptPath, runnerScript);
+      fs.writeFileSync(scriptPath, dockerRunnerScript);
 
       const out = fs.openSync(logFile, "a");
       const err = fs.openSync(logFile, "a");

@@ -12,12 +12,11 @@ To get started, you need to configure a few settings. These are stored securely 
 
 1.  **Working Directory**: The folder where the agent will operate and store results.
 2.  **Model Name**: The specific model ID (e.g., \`anthropic/claude-3.5-haiku\`).
-3.  **Daytona API Key**: Get your key from [app.daytona.io](https://app.daytona.io).
-4.  **OpenRouter API Key**: Your API key for OpenRouter (for model access).
+3.  **OpenRouter API Key**: Your API key for OpenRouter (for model access).
 
 ## How It Works
 
-Tasks run inside isolated Daytona sandboxes with OpenCode as the AI agent. This provides:
+Tasks run inside isolated Docker containers with OpenCode as the AI agent. This provides:
 - Secure, isolated execution environment
 - Full AI coding capabilities
 - Automatic cleanup after tasks complete
