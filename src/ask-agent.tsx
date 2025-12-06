@@ -180,8 +180,13 @@ function detectRefusal(output) {
 }
 
 const promptText = \`IMPORTANT INSTRUCTIONS:
-1. You are running in a Daytona sandbox environment.
-2. Create SINGLE-FILE executables (bun/uv) when asked to create tools.
+1. You are running in a Daytona sandbox with LIMITED NETWORK ACCESS.
+2. For tasks requiring external network (downloads, API calls, web scraping, etc.):
+   - Create a SINGLE-FILE executable script using bun or uv shebang
+   - Save it to /home/daytona/output/ directory
+   - Do NOT try to execute network-dependent commands in the sandbox
+   - The user will run the script locally
+3. For coding/file tasks: execute normally in the sandbox.
 
 USER REQUEST:
 ${prompt.replace(/`/g, "\\`").replace(/\$/g, "\\$")}
@@ -237,8 +242,8 @@ async function main() {
         const sandbox = await daytona.create({ language: "typescript" });
         log(\`Sandbox created: \${sandbox.id || "unknown"}\`);
 
-        log("Installing opencode via npm...");
-        await sandbox.process.executeCommand("npm install -g opencode-ai 2>&1");
+        log("Installing opencode via bun...");
+        await sandbox.process.executeCommand("bun add -g opencode-ai 2>&1");
         log("OpenCode installed");
 
         if (fileContents.length > 0) {
