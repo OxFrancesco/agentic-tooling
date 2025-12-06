@@ -19,6 +19,7 @@ interface Preferences {
   retryModelName: string;
   openRouterApiKey: string;
   daytonaApiKey: string;
+  useLocalDocker: boolean;
 }
 
 interface FormValues {
@@ -29,9 +30,12 @@ interface FormValues {
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
 
-  // Onboarding Check
+  // Onboarding Check - Docker mode doesn't need Daytona API key
   const isConfigured =
-    preferences.workingDirectory && preferences.modelName && preferences.daytonaApiKey && preferences.openRouterApiKey;
+    preferences.workingDirectory &&
+    preferences.modelName &&
+    preferences.openRouterApiKey &&
+    (preferences.useLocalDocker || preferences.daytonaApiKey);
 
   if (!isConfigured) {
     return (
@@ -53,7 +57,8 @@ export default function Command() {
 
   async function handleSubmit(values: FormValues) {
     const { prompt, files } = values;
-    const { workingDirectory, modelName, retryModelName, openRouterApiKey, daytonaApiKey } = preferences;
+    const { workingDirectory, modelName, retryModelName, openRouterApiKey, daytonaApiKey, useLocalDocker } =
+      preferences;
 
     if (!prompt) {
       await showToast({
@@ -129,7 +134,141 @@ export default function Command() {
       }
 
       const scriptPath = `${workingDirectory}/.runner-${taskId}.mjs`;
-      const runnerScript = `
+
+      // Docker-based runner script (full network access)
+      const dockerRunnerScript = `
+import { execSync, spawnSync } from "child_process";
+import fs from "fs";
+
+const taskId = "${taskId}";
+const tasksFile = "${tasksFile}";
+const logFile = "${logFile}";
+const workingDirectory = "${workingDirectory}";
+const primaryModel = "openrouter/${modelName || "anthropic/claude-3.5-haiku"}";
+const retryModel = "${retryModelName ? `openrouter/${retryModelName}` : ""}";
+const openRouterApiKey = "${openRouterApiKey}";
+
+const promptText = \`You are running in a Docker container with FULL NETWORK ACCESS.
+Execute tasks directly - you can download files, make API calls, etc.
+Save any output files to /workspace directory.
+
+USER REQUEST:
+${prompt.replace(/`/g, "\\`").replace(/\$/g, "\\$")}
+\`;
+
+function log(msg) {
+    const line = \`[\${new Date().toISOString()}] \${msg}\\n\`;
+    fs.appendFileSync(logFile, line);
+    console.log(msg);
+}
+
+function updateTask(status, endTime) {
+    try {
+        let tasks = [];
+        if (fs.existsSync(tasksFile)) {
+            tasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
+        }
+        const idx = tasks.findIndex(t => t.id === taskId);
+        if (idx !== -1) {
+            tasks[idx].status = status;
+            if (endTime) tasks[idx].endTime = endTime;
+            fs.writeFileSync(tasksFile, JSON.stringify(tasks, null, 2));
+        }
+    } catch(e) { log("Failed to update task: " + e); }
+}
+
+function escapeForShell(value) {
+    return value.replace(/'/g, "'\\\\''");
+}
+
+function runDocker(model, prompt) {
+    const escapedPrompt = escapeForShell(prompt);
+    const dockerArgs = [
+        "run", "--rm",
+        "-e", \`OPENROUTER_API_KEY=\${openRouterApiKey}\`,
+        "-v", \`\${workingDirectory}:/workspace\`,
+        "-w", "/workspace",
+        "node:20",
+        "bash", "-c",
+        \`npm install -g opencode-ai 2>&1 && opencode run --model '\${escapeForShell(model)}' '\${escapedPrompt}' --print-logs 2>&1\`
+    ];
+    
+    log(\`Running: docker \${dockerArgs.slice(0, 5).join(" ")} ...\`);
+    const result = spawnSync("docker", dockerArgs, { 
+        encoding: "utf-8",
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: 600000 // 10 min timeout
+    });
+    
+    return {
+        exitCode: result.status || 0,
+        output: (result.stdout || "") + (result.stderr || "")
+    };
+}
+
+// Patterns that indicate model refusal
+const REFUSAL_PATTERNS = [
+    "I can't help",
+    "I cannot help",
+    "I'm unable to",
+    "I am unable to",
+    "I can't assist",
+    "I cannot assist",
+    "against my guidelines",
+    "I'm not able to",
+    "I am not able to",
+    "I won't be able",
+    "I will not be able",
+    "not something I can help with",
+    "I'm sorry, but I can't",
+    "I apologize, but I cannot"
+];
+
+function detectRefusal(output) {
+    const lowerOutput = output.toLowerCase();
+    return REFUSAL_PATTERNS.some(pattern => lowerOutput.includes(pattern.toLowerCase()));
+}
+
+try {
+    log("Starting Docker sandbox...");
+    
+    // Check Docker is available
+    try {
+        execSync("docker --version", { encoding: "utf-8" });
+        log("Docker is available");
+    } catch (e) {
+        throw new Error("Docker is not installed or not running");
+    }
+    
+    // Run with primary model
+    log(\`Running opencode with primary model: \${primaryModel}\`);
+    let result = runDocker(primaryModel, promptText);
+    
+    log(\`Primary model finished with exit code: \${result.exitCode}\`);
+    log("Output:\\n" + result.output);
+    
+    // Check if model refused and retry model is configured
+    if (retryModel && detectRefusal(result.output)) {
+        log("\\n=== REFUSAL DETECTED - Retrying with fallback model ===\\n");
+        log(\`Retrying with: \${retryModel}\`);
+        
+        result = runDocker(retryModel, promptText);
+        
+        log(\`Retry model finished with exit code: \${result.exitCode}\`);
+        log("Retry Output:\\n" + result.output);
+    }
+    
+    updateTask(result.exitCode === 0 ? "completed" : "failed", Date.now());
+    process.exit(result.exitCode);
+} catch (err) {
+    log("Error: " + (err?.message || err));
+    updateTask("failed", Date.now());
+    process.exit(1);
+}
+`;
+
+      // Daytona-based runner script (network restricted)
+      const daytonaRunnerScript = `
 import { execSync } from "child_process";
 import fs from "fs";
 
@@ -162,8 +301,6 @@ const REFUSAL_PATTERNS = [
     "I am unable to",
     "I can't assist",
     "I cannot assist",
-    "violate",
-    "Terms of Service",
     "against my guidelines",
     "I'm not able to",
     "I am not able to",
@@ -315,6 +452,9 @@ async function main() {
 
 main();
 `;
+
+      // Choose runner based on preference
+      const runnerScript = useLocalDocker ? dockerRunnerScript : daytonaRunnerScript;
       fs.writeFileSync(scriptPath, runnerScript);
 
       const out = fs.openSync(logFile, "a");

@@ -64,11 +64,20 @@
       "default": "deepseek/deepseek-chat"
     },
     {
+      "name": "useLocalDocker",
+      "title": "Use Local Docker",
+      "description": "Run in local Docker container instead of Daytona (full network access)",
+      "type": "checkbox",
+      "required": false,
+      "default": false,
+      "label": "Use Docker (requires Docker installed)"
+    },
+    {
       "name": "daytonaApiKey",
       "title": "Daytona API Key",
-      "description": "Your Daytona API Key. Get it from https://app.daytona.io",
+      "description": "Your Daytona API Key. Get it from https://app.daytona.io (not needed if using Docker)",
       "type": "password",
-      "required": true
+      "required": false
     },
     {
       "name": "openRouterApiKey",
