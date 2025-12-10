@@ -131,6 +131,9 @@ export default function Command() {
       }
 
       const scriptPath = `${workingDirectory}/.runner-${taskId}.mjs`;
+      const dockerfilePath = path.join(workingDirectory, "docker", "Dockerfile");
+      const dockerContextPath = workingDirectory;
+      const escapePathForTemplate = (value: string) => value.replace(/\\/g, "\\\\");
 
       // Docker-based runner script (full network access)
       const dockerRunnerScript = `
@@ -146,6 +149,8 @@ const toolsDirectory = "${toolsDirectory}";
 const primaryModel = "openrouter/${modelName || "anthropic/claude-3.5-haiku"}";
 const retryModel = "${retryModelName ? `openrouter/${retryModelName}` : ""}";
 const openRouterApiKey = "${openRouterApiKey}";
+const dockerfilePath = "${escapePathForTemplate(dockerfilePath)}";
+const dockerContextPath = "${escapePathForTemplate(dockerContextPath)}";
 
 const promptText = \`You are running in a Docker container with FULL NETWORK ACCESS.
 Execute tasks directly - you can download files, make API calls, etc.
@@ -156,6 +161,10 @@ Before creating any scripts or tools, check /tools directory for existing tools 
 1. Run: ls -la /tools/ to see available tools
 2. If a suitable tool exists, use it instead of creating a new one
 3. If you must create a new tool, save it to /workspace with a descriptive filename
+
+IMPORTANT - INSTALLING PACKAGES:
+For Python tools like yt-dlp, use: uv tool run yt-dlp [args]
+This runs the tool without needing global installation.
 
 USER REQUEST:
 ${prompt.replace(/`/g, "\\`").replace(/\$/g, "\\$")}
@@ -233,12 +242,62 @@ const REFUSAL_PATTERNS = [
     "I shouldn't help",
     "I must decline",
     "cannot fulfill this request",
-    "can't fulfill this request"
+    "can't fulfill this request",
+    "decline this request",
+    "respectfully decline",
+    "violates YouTube's Terms",
+    "Terms of Service",
+    "copyright infringement"
 ];
 
 function detectRefusal(output) {
     const lowerOutput = output.toLowerCase();
     return REFUSAL_PATTERNS.some(pattern => lowerOutput.includes(pattern.toLowerCase()));
+}
+
+function ensureDockerImage() {
+    // Use spawnSync for explicit exit code checking (more reliable than execSync throwing)
+    const inspectResult = spawnSync("docker", ["image", "inspect", DOCKER_IMAGE], {
+        encoding: "utf-8",
+        stdio: "pipe"
+    });
+    
+    if (inspectResult.status === 0) {
+        // Image exists, verify it's actually usable
+        const testResult = spawnSync("docker", ["run", "--rm", DOCKER_IMAGE, "echo", "test"], {
+            encoding: "utf-8",
+            stdio: "pipe",
+            timeout: 30000
+        });
+        
+        if (testResult.status === 0) {
+            log("Docker image verified");
+            return;
+        }
+        log("Docker image exists but is not usable, rebuilding...");
+    } else {
+        log("Docker image '" + DOCKER_IMAGE + "' not found. Building...");
+    }
+
+    if (!fs.existsSync(dockerfilePath)) {
+        throw new Error(
+            "Dockerfile not found at " + dockerfilePath + ". Please ensure you are using the repo version of the extension."
+        );
+    }
+
+    log("Building Docker image from " + dockerfilePath + "...");
+    const buildResult = spawnSync("docker", [
+        "build", "-t", DOCKER_IMAGE, "-f", dockerfilePath, dockerContextPath
+    ], {
+        encoding: "utf-8",
+        stdio: "inherit",
+        timeout: 300000
+    });
+    
+    if (buildResult.status !== 0) {
+        throw new Error("Failed to build Docker image. Exit code: " + buildResult.status);
+    }
+    log("Docker image built successfully.");
 }
 
 function collectTools() {
@@ -272,11 +331,13 @@ try {
     
     // Check Docker is available
     try {
-        execSync("docker --version", { encoding: "utf-8" });
+        execSync("docker info", { encoding: "utf-8", stdio: "pipe" });
         log("Docker is available");
     } catch (e) {
         throw new Error("Docker is not installed or not running");
     }
+
+    ensureDockerImage();
     
     // Run with primary model
     log(\`Running opencode with primary model: \${primaryModel}\`);
@@ -288,16 +349,6 @@ try {
     // Check if model refused and retry model is configured
     if (retryModel && detectRefusal(result.output)) {
         log("\\n=== REFUSAL DETECTED - Retrying with fallback model ===\\n");
-        
-        // Clean up opencode state from workspace before retry
-        log("Cleaning up workspace state...");
-        try {
-            execSync(\`rm -rf "\${workingDirectory}/.opencode" "\${workingDirectory}/.config/opencode" 2>/dev/null || true\`, { encoding: "utf-8" });
-            log("Workspace cleanup done");
-        } catch (e) {
-            log("Cleanup warning: " + e.message);
-        }
-        
         log(\`Retrying with: \${retryModel}\`);
         
         result = runDocker(retryModel, promptText);
@@ -309,6 +360,15 @@ try {
     // Collect tools on successful run
     if (result.exitCode === 0) {
         collectTools();
+    }
+    
+    // Cleanup workspace state after task is done
+    log("Cleaning up workspace state...");
+    try {
+        execSync(\`rm -rf "\${workingDirectory}/.opencode" "\${workingDirectory}/.config/opencode" 2>/dev/null || true\`, { encoding: "utf-8" });
+        log("Workspace cleanup done");
+    } catch (e) {
+        log("Cleanup warning: " + e.message);
     }
     
     updateTask(result.exitCode === 0 ? "completed" : "failed", Date.now());

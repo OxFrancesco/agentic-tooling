@@ -85,36 +85,59 @@ if (!fs.existsSync(toolsDirectory)) {
 
 const DOCKER_IMAGE = "agentic-tooling:latest";
 
-// Check Docker is available
+// Check Docker is available and daemon is running
 try {
-  execSync("docker --version", { encoding: "utf-8", stdio: "pipe" });
+  execSync("docker info", { encoding: "utf-8", stdio: "pipe" });
 } catch {
-  console.error("Error: Docker is not installed or not running");
+  console.error("Error: Docker is not installed or the Docker daemon is not running");
   process.exit(1);
 }
 
 // Check if our Docker image exists, build if not
 function ensureDockerImage(): void {
-  try {
-    execSync(`docker image inspect ${DOCKER_IMAGE}`, { encoding: "utf-8", stdio: "pipe" });
-  } catch {
+  const dockerfilePath = path.join(process.cwd(), "docker", "Dockerfile");
+  
+  // Use spawnSync for explicit exit code checking
+  const inspectResult = require("child_process").spawnSync("docker", ["image", "inspect", DOCKER_IMAGE], {
+    encoding: "utf-8",
+    stdio: "pipe",
+  });
+
+  if (inspectResult.status === 0) {
+    // Image exists, verify it's actually usable
+    const testResult = require("child_process").spawnSync("docker", ["run", "--rm", DOCKER_IMAGE, "echo", "test"], {
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 30000,
+    });
+
+    if (testResult.status === 0) {
+      return; // Image is verified and usable
+    }
+    console.log("Docker image exists but is not usable, rebuilding...");
+  } else {
     console.log(`Docker image '${DOCKER_IMAGE}' not found. Building...`);
-    const dockerfilePath = path.join(process.cwd(), "docker", "Dockerfile");
-    if (!fs.existsSync(dockerfilePath)) {
-      console.error("Error: docker/Dockerfile not found. Run from project root.");
-      process.exit(1);
-    }
-    try {
-      execSync(`docker build -t ${DOCKER_IMAGE} -f docker/Dockerfile .`, {
-        encoding: "utf-8",
-        stdio: "inherit",
-      });
-      console.log("Docker image built successfully.\n");
-    } catch {
-      console.error("Error: Failed to build Docker image");
-      process.exit(1);
-    }
   }
+
+  if (!fs.existsSync(dockerfilePath)) {
+    console.error("Error: docker/Dockerfile not found. Run from project root.");
+    process.exit(1);
+  }
+
+  console.log(`Building Docker image from ${dockerfilePath}...`);
+  const buildResult = require("child_process").spawnSync("docker", [
+    "build", "-t", DOCKER_IMAGE, "-f", dockerfilePath, process.cwd()
+  ], {
+    encoding: "utf-8",
+    stdio: "inherit",
+    timeout: 300000,
+  });
+
+  if (buildResult.status !== 0) {
+    console.error("Error: Failed to build Docker image");
+    process.exit(1);
+  }
+  console.log("Docker image built successfully.\n");
 }
 
 function log(msg: string) {
@@ -148,6 +171,11 @@ const REFUSAL_PATTERNS = [
   "I must decline",
   "cannot fulfill this request",
   "can't fulfill this request",
+  "decline this request",
+  "respectfully decline",
+  "violates YouTube's Terms",
+  "Terms of Service",
+  "copyright infringement",
 ];
 
 function detectRefusal(output: string): boolean {
@@ -262,6 +290,10 @@ Before creating any scripts or tools, check /tools directory for existing tools 
 1. Run: ls -la /tools/ to see available tools
 2. If a suitable tool exists, use it instead of creating a new one
 3. If you must create a new tool, save it to /workspace with a descriptive filename
+
+IMPORTANT - INSTALLING PACKAGES:
+For Python tools like yt-dlp, use: uv tool run yt-dlp [args]
+This runs the tool without needing global installation.
 
 USER REQUEST:
 ${prompt}
