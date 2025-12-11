@@ -194,19 +194,19 @@ function collectTools(): void {
       if (excludePatterns.some((p) => file.includes(p))) continue;
 
       // Check if it's a tool file
-      if (toolExtensions.some((ext) => file.endsWith(ext))) {
-        const srcPath = path.join(workingDirectory, file);
-        const destPath = path.join(toolsDirectory, file);
+      if (!toolExtensions.some((ext) => file.endsWith(ext))) continue;
 
-        // Skip if not a file or already exists in tools
-        if (!fs.statSync(srcPath).isFile()) continue;
-        if (fs.existsSync(destPath)) continue;
+      const srcPath = path.join(workingDirectory, file);
+      const destPath = path.join(toolsDirectory, file);
 
-        // Copy to tools directory
-        fs.copyFileSync(srcPath, destPath);
-        fs.chmodSync(destPath, 0o755);
-        log(`Saved new tool: ${file}`);
-      }
+      // Skip if not a file or already exists in tools
+      if (!fs.statSync(srcPath).isFile()) continue;
+      if (fs.existsSync(destPath)) continue;
+
+      // Copy to tools directory
+      fs.copyFileSync(srcPath, destPath);
+      fs.chmodSync(destPath, 0o755);
+      log(`Saved new tool: ${file}`);
     }
   } catch (e) {
     log(`Warning: Failed to collect tools: ${e}`);
@@ -216,25 +216,25 @@ function collectTools(): void {
 async function runDocker(model: string, promptText: string): Promise<{ exitCode: number; output: string }> {
   const escapedPrompt = escapeForShell(promptText);
 
-  const dockerArgs = [
-    "run",
-    "--rm",
-    "-e",
-    `OPENROUTER_API_KEY=${openRouterApiKey}`,
-    "-v",
-    `${workingDirectory}:/workspace`,
-    "-v",
-    `${toolsDirectory}:/tools:ro`,
-    "-w",
-    "/workspace",
-    DOCKER_IMAGE,
-    "opencode",
-    "run",
-    "--model",
-    model,
-    escapedPrompt,
-    "--print-logs",
-  ];
+const dockerArgs = [
+  "run",
+  "--rm",
+  "-e",
+  `OPENROUTER_API_KEY=${openRouterApiKey}`,
+  "-v",
+  `${workingDirectory}:/workspace`,
+  "-v",
+  `${toolsDirectory}:/workspace/tools:ro`,
+  "-w",
+  "/workspace",
+  DOCKER_IMAGE,
+  "opencode",
+  "run",
+  "--model",
+  model,
+  escapedPrompt,
+  "--print-logs",
+];
 
   log(`Running Docker with model: ${model}`);
 
@@ -286,8 +286,8 @@ Execute tasks directly - you can download files, make API calls, etc.
 Save any output files to /workspace directory.
 
 IMPORTANT - TOOL REUSE:
-Before creating any scripts or tools, check /tools directory for existing tools that might solve the task:
-1. Run: ls -la /tools/ to see available tools
+Before creating any scripts or tools, check /workspace/tools directory for existing tools that might solve the task:
+1. Run: ls -la /workspace/tools/ to see available tools
 2. If a suitable tool exists, use it instead of creating a new one
 3. If you must create a new tool, save it to /workspace with a descriptive filename
 
