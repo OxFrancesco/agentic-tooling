@@ -69,6 +69,13 @@
       "description": "Your OpenRouter API Key for model access",
       "type": "password",
       "required": true
+    },
+    {
+      "name": "githubToken",
+      "title": "GitHub Token",
+      "description": "Personal Access Token with 'repo' scope for RayBuddy repository",
+      "type": "password",
+      "required": false
     }
   ],
   "dependencies": {

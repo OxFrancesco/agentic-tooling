@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-import { execSync, spawn } from "child_process";
+import { execSync, spawn, spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import { parseArgs } from "util";
 
 // Load .env file if present
@@ -16,6 +17,8 @@ if (fs.existsSync(envPath)) {
   }
 }
 
+const RAYBUDDY_PATH = path.join(os.homedir(), ".raybuddy");
+
 const { values, positionals } = parseArgs({
   args: process.argv.slice(2),
   options: {
@@ -26,6 +29,7 @@ const { values, positionals } = parseArgs({
     file: { type: "string", short: "f", multiple: true },
     timeout: { type: "string", short: "t", default: "600000" },
     quiet: { type: "boolean", short: "q" },
+    "raybuddy": { type: "boolean", default: true },
   },
   allowPositionals: true,
 });
@@ -42,9 +46,11 @@ Options:
   -f, --file            Context file(s) to include (can be used multiple times)
   -t, --timeout         Timeout in milliseconds (default: 600000 = 10 min)
   -q, --quiet           Only output final result, suppress logs
+  --no-raybuddy         Disable RayBuddy tool sync (uses local tools directory)
 
 Environment variables:
   OPENROUTER_API_KEY    Required. Your OpenRouter API key
+  GITHUB_TOKEN          Optional. For RayBuddy tool sync
 
 Examples:
   bun run scripts/cli.ts "Create a hello world script"
@@ -77,10 +83,54 @@ if (!fs.existsSync(workingDirectory)) {
   process.exit(1);
 }
 
-// Ensure tools directory exists
-const toolsDirectory = path.join(workingDirectory, "tools");
+// Determine tools directory (RayBuddy or local)
+const githubToken = process.env.GITHUB_TOKEN;
+const useRayBuddy = values.raybuddy as boolean && !!githubToken && fs.existsSync(RAYBUDDY_PATH) && fs.existsSync(path.join(RAYBUDDY_PATH, ".git"));
+const toolsDirectory = useRayBuddy ? RAYBUDDY_PATH : path.join(workingDirectory, "tools");
+
 if (!fs.existsSync(toolsDirectory)) {
   fs.mkdirSync(toolsDirectory, { recursive: true });
+}
+
+function syncToolsFromRayBuddy(): boolean {
+  if (!useRayBuddy) return false;
+  try {
+    const gitDir = path.join(RAYBUDDY_PATH, ".git");
+    execSync(`git --git-dir="${gitDir}" --work-tree="${RAYBUDDY_PATH}" pull --rebase origin main`, {
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 30000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function syncToolsToRayBuddy(newTools: string[]): boolean {
+  if (!useRayBuddy || newTools.length === 0) return true;
+  try {
+    const gitDir = path.join(RAYBUDDY_PATH, ".git");
+    const gitCmd = `git --git-dir="${gitDir}" --work-tree="${RAYBUDDY_PATH}"`;
+    execSync(`${gitCmd} add -A`, { encoding: "utf-8", stdio: "pipe", cwd: RAYBUDDY_PATH });
+    const status = execSync(`${gitCmd} status --porcelain`, { encoding: "utf-8", stdio: "pipe" });
+    if (!status.trim()) return true;
+    execSync(`${gitCmd} commit -m "Add new tools from Agentic Tooling CLI"`, {
+      encoding: "utf-8",
+      stdio: "pipe",
+      cwd: RAYBUDDY_PATH,
+    });
+    execSync(`${gitCmd} push origin main`, {
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 30000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const DOCKER_IMAGE = "agentic-tooling:latest";
@@ -186,27 +236,33 @@ function detectRefusal(output: string): boolean {
 function collectTools(): void {
   const toolExtensions = [".sh", ".ts", ".js", ".py"];
   const excludePatterns = [".runner-", "node_modules", ".git", ".agentic"];
+  const newTools: string[] = [];
 
   try {
     const files = fs.readdirSync(workingDirectory);
     for (const file of files) {
-      // Skip if matches exclude pattern
       if (excludePatterns.some((p) => file.includes(p))) continue;
-
-      // Check if it's a tool file
       if (!toolExtensions.some((ext) => file.endsWith(ext))) continue;
 
       const srcPath = path.join(workingDirectory, file);
       const destPath = path.join(toolsDirectory, file);
 
-      // Skip if not a file or already exists in tools
       if (!fs.statSync(srcPath).isFile()) continue;
       if (fs.existsSync(destPath)) continue;
 
-      // Copy to tools directory
       fs.copyFileSync(srcPath, destPath);
       fs.chmodSync(destPath, 0o755);
+      newTools.push(file);
       log(`Saved new tool: ${file}`);
+    }
+
+    if (useRayBuddy && newTools.length > 0) {
+      log(`Syncing ${newTools.length} new tools to RayBuddy...`);
+      if (syncToolsToRayBuddy(newTools)) {
+        log("Tools synced to RayBuddy successfully");
+      } else {
+        log("Warning: Failed to sync tools to RayBuddy");
+      }
     }
   } catch (e) {
     log(`Warning: Failed to collect tools: ${e}`);
@@ -322,6 +378,13 @@ async function main() {
   log(`Primary model: openrouter/${modelName}`);
   if (retryModelName) {
     log(`Retry model: openrouter/${retryModelName}`);
+  }
+
+  if (useRayBuddy) {
+    log(`Using RayBuddy tools from: ${RAYBUDDY_PATH}`);
+    syncToolsFromRayBuddy();
+  } else {
+    log(`Using local tools from: ${toolsDirectory}`);
   }
 
   let result = await runDocker(`openrouter/${modelName}`, promptText);

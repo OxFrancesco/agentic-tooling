@@ -12,12 +12,14 @@ import {
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
+import { getLocalRepoPath, isRayBuddyConfigured, syncToolsFromRepo } from "./raybuddy";
 
 interface Preferences {
   workingDirectory: string;
   modelName: string;
   retryModelName: string;
   openRouterApiKey: string;
+  githubToken?: string;
 }
 
 interface FormValues {
@@ -50,7 +52,7 @@ export default function Command() {
 
   async function handleSubmit(values: FormValues) {
     const { prompt, files } = values;
-    const { workingDirectory, modelName, retryModelName, openRouterApiKey } = preferences;
+    const { workingDirectory, modelName, retryModelName, openRouterApiKey, githubToken } = preferences;
 
     if (!prompt) {
       await showToast({
@@ -86,7 +88,10 @@ export default function Command() {
       const taskId = Date.now().toString();
       const logFile = `${workingDirectory}/.agentic-logs/${taskId}.log`;
       const tasksFile = `${workingDirectory}/.agentic-tasks.json`;
-      const toolsDirectory = `${workingDirectory}/tools`;
+
+      // Use RayBuddy if configured, otherwise fall back to local tools directory
+      const useRayBuddy = isRayBuddyConfigured(githubToken);
+      const toolsDirectory = useRayBuddy ? getLocalRepoPath() : `${workingDirectory}/tools`;
 
       if (!fs.existsSync(path.dirname(logFile))) {
         fs.mkdirSync(path.dirname(logFile), { recursive: true });
@@ -94,6 +99,11 @@ export default function Command() {
 
       if (!fs.existsSync(toolsDirectory)) {
         fs.mkdirSync(toolsDirectory, { recursive: true });
+      }
+
+      // Sync tools from RayBuddy before running
+      if (useRayBuddy) {
+        syncToolsFromRepo();
       }
 
       // Initialize task
@@ -151,6 +161,8 @@ const retryModel = "${retryModelName ? `openrouter/${retryModelName}` : ""}";
 const openRouterApiKey = "${openRouterApiKey}";
 const dockerfilePath = "${escapePathForTemplate(dockerfilePath)}";
 const dockerContextPath = "${escapePathForTemplate(dockerContextPath)}";
+const useRayBuddy = ${useRayBuddy};
+const githubToken = "${githubToken || ""}";
 
 const promptText = \`You are running in a Docker container with FULL NETWORK ACCESS.
 Execute tasks directly - you can download files, make API calls, etc.
@@ -303,6 +315,7 @@ function ensureDockerImage() {
 function collectTools() {
     const toolExtensions = [".sh", ".ts", ".js", ".py"];
     const excludePatterns = [".runner-", "node_modules", ".git", ".agentic"];
+    const newTools = [];
     
     try {
         const files = fs.readdirSync(workingDirectory);
@@ -317,8 +330,27 @@ function collectTools() {
                     if (fs.existsSync(destPath)) continue;
                     fs.copyFileSync(srcPath, destPath);
                     fs.chmodSync(destPath, 0o755);
+                    newTools.push(file);
                     log("Saved new tool: " + file);
                 } catch(e) {}
+            }
+        }
+        
+        // Sync to RayBuddy if configured
+        if (useRayBuddy && githubToken && newTools.length > 0) {
+            log("Syncing " + newTools.length + " new tools to RayBuddy...");
+            try {
+                const gitDir = toolsDirectory + "/.git";
+                const gitCmd = 'git --git-dir="' + gitDir + '" --work-tree="' + toolsDirectory + '"';
+                execSync(gitCmd + " add -A", { encoding: "utf-8", stdio: "pipe", cwd: toolsDirectory });
+                const status = execSync(gitCmd + " status --porcelain", { encoding: "utf-8", stdio: "pipe" });
+                if (status.trim()) {
+                    execSync(gitCmd + ' commit -m "Add new tools from Agentic Tooling"', { encoding: "utf-8", stdio: "pipe", cwd: toolsDirectory });
+                    execSync(gitCmd + " push origin main", { encoding: "utf-8", stdio: "pipe", timeout: 30000 });
+                    log("Tools synced to RayBuddy successfully");
+                }
+            } catch(e) {
+                log("Warning: Failed to sync to RayBuddy: " + e.message);
             }
         }
     } catch(e) {
