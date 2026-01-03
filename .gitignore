@@ -10,6 +10,10 @@ raycast-env.d.ts
 compiled_raycast_swift
 compiled_raycast_rust
 
+# Cursor specific files
+.cursor/
+.cursor/debug.log
+
 # misc
 .DS_Store
 .env
